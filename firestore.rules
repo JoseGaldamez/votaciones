@@ -1,0 +1,44 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Reglas para la colección principal 'polls'
+    match /polls/{pollId} {
+      // Cualquier usuario autenticado puede leer los detalles públicos de una votación
+      allow read: if request.auth != null;
+      
+      // Solo usuarios autenticados pueden crear votaciones, y deben marcarse a sí mismos como creadores
+      allow create: if request.auth != null 
+                    && request.resource.data.creatorId == request.auth.uid;
+      
+      // Solo el creador puede modificar o eliminar la votación (por ejemplo, para cerrarla)
+      allow update: if request.auth != null 
+                    && resource.data.creatorId == request.auth.uid;
+                    
+      allow delete: if request.auth != null 
+                    && resource.data.creatorId == request.auth.uid;
+      
+      // Reglas para la subcolección de votos individuales 'votes'
+      match /votes/{userId} {
+        // Un usuario solo puede emitir su voto si:
+        // 1. Está autenticado y su UID coincide con el ID del documento
+        // 2. La votación padre está activa ('active')
+        allow create: if request.auth != null 
+                      && request.auth.uid == userId 
+                      && get(/databases/$(database)/documents/polls/$(pollId)).data.status == 'active';
+        
+        // No se permite modificar ni borrar votos una vez que se emiten
+        allow update, delete: if false;
+        
+        // Regla clave de privacidad en tiempo real:
+        // Permitir leer la colección de votos (para conteos e históricos) únicamente a:
+        // 1. El creador original de la votación
+        // 2. Un votante, pero SOLAMENTE si ya ha votado (existe su documento de voto con su UID)
+        allow read: if request.auth != null && (
+          get(/databases/$(database)/documents/polls/$(pollId)).data.creatorId == request.auth.uid ||
+          exists(/databases/$(database)/documents/polls/$(pollId)/votes/$(request.auth.uid))
+        );
+      }
+    }
+  }
+}
