@@ -1,24 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { collection, query, orderBy, onSnapshot, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from '../firebase';
 import { useAuthStore } from '../store/useAuthStore';
 import { CreatePollModal } from './CreatePollModal';
-import { 
-  Vote, LogOut, Plus, Share2, ClipboardCheck, 
-  Calendar, CheckCircle, ShieldAlert
-} from 'lucide-react';
-
-interface Poll {
-  id: string;
-  title: string;
-  description: string;
-  creatorId: string;
-  creatorName: string;
-  status: 'active' | 'ended';
-  createdAt: any;
-  endedAt: any | null;
-  options: Array<{ id: string; name: string }>;
-}
+import { DashboardHeader } from './DashboardHeader';
+import { DashboardStats } from './DashboardStats';
+import { PollCard } from './PollCard';
+import { subscribeToPolls, closePoll, type Poll } from '../services/pollService';
+import { ConfirmModal } from './ConfirmModal';
+import { Plus, ClipboardCheck, ShieldAlert } from 'lucide-react';
 
 export const Dashboard: React.FC = () => {
   const { user, logout } = useAuthStore();
@@ -27,24 +15,20 @@ export const Dashboard: React.FC = () => {
   const [filter, setFilter] = useState<'all' | 'active' | 'ended'>('all');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
+  const [isConfirmOpen, setIsConfirmOpen] = useState(false);
+  const [pollToClose, setPollToClose] = useState<string | null>(null);
 
   useEffect(() => {
-    const pollsQuery = query(collection(db, 'polls'), orderBy('createdAt', 'desc'));
-    
-    const unsubscribe = onSnapshot(pollsQuery, (snapshot) => {
-      const loadedPolls: Poll[] = [];
-      snapshot.forEach((doc) => {
-        loadedPolls.push({
-          id: doc.id,
-          ...doc.data()
-        } as Poll);
-      });
-      setPolls(loadedPolls);
-      setLoading(false);
-    }, (error) => {
-      console.error("Error loading polls:", error);
-      setLoading(false);
-    });
+    const unsubscribe = subscribeToPolls(
+      (loadedPolls) => {
+        setPolls(loadedPolls);
+        setLoading(false);
+      },
+      (error) => {
+        console.error("Error loading polls:", error);
+        setLoading(false);
+      }
+    );
 
     return () => unsubscribe();
   }, []);
@@ -68,21 +52,22 @@ export const Dashboard: React.FC = () => {
       });
   };
 
-  const handleClosePoll = async (pollId: string, e: React.MouseEvent) => {
+  const handleClosePoll = (pollId: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!window.confirm('¿Estás seguro de que quieres dar por terminada esta votación? Nadie más podrá votar.')) {
-      return;
-    }
+    setPollToClose(pollId);
+    setIsConfirmOpen(true);
+  };
+
+  const confirmClosePoll = async () => {
+    if (!pollToClose) return;
     try {
-      const pollRef = doc(db, 'polls', pollId);
-      await updateDoc(pollRef, {
-        status: 'ended',
-        endedAt: serverTimestamp()
-      });
+      await closePoll(pollToClose);
       showToast('Votación cerrada con éxito.');
     } catch (error) {
       console.error('Error closing poll:', error);
       showToast('Error al cerrar la votación.');
+    } finally {
+      setPollToClose(null);
     }
   };
 
@@ -109,46 +94,7 @@ export const Dashboard: React.FC = () => {
       <div className="absolute bottom-0 right-[20%] w-[40%] h-[30%] rounded-full bg-purple-500/5 blur-[120px] pointer-events-none" />
 
       {/* Header */}
-      <header className="sticky top-0 z-30 px-6 py-4 bg-slate-950/80 backdrop-blur-md border-b border-slate-900/60 flex items-center justify-between">
-        <div className="flex items-center gap-3 cursor-pointer" onClick={() => window.location.hash = '#/'}>
-          <div className="p-2 bg-gradient-to-tr from-indigo-500 to-purple-500 rounded-xl shadow-md">
-            <Vote className="w-5 h-5 text-white" />
-          </div>
-          <span className="text-lg font-bold tracking-tight bg-gradient-to-r from-white to-slate-350 bg-clip-text text-transparent">
-            VotaReal
-          </span>
-        </div>
-
-        <div className="flex items-center gap-4">
-          {user && (
-            <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-slate-900/60 border border-slate-800/80 rounded-2xl">
-              {user.photoURL ? (
-                <img 
-                  src={user.photoURL} 
-                  alt={user.displayName || 'Avatar'} 
-                  className="w-6 h-6 rounded-full border border-slate-700"
-                />
-              ) : (
-                <div className="w-6 h-6 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-bold text-xs">
-                  {user.displayName?.charAt(0) || 'U'}
-                </div>
-              )}
-              <span className="text-xs text-slate-300 font-semibold max-w-[120px] truncate">
-                {user.displayName || 'Usuario'}
-              </span>
-            </div>
-          )}
-
-          <button
-            onClick={() => logout()}
-            className="flex items-center gap-2 text-xs font-bold text-slate-400 hover:text-rose-400 px-3.5 py-2.5 bg-slate-900/20 hover:bg-rose-500/10 border border-slate-800/40 hover:border-rose-500/20 rounded-2xl transition-all cursor-pointer"
-            title="Cerrar sesión"
-          >
-            <LogOut className="w-4 h-4" />
-            <span className="hidden sm:inline">Salir</span>
-          </button>
-        </div>
-      </header>
+      <DashboardHeader user={user} onLogout={logout} />
 
       {/* Main Content */}
       <main className="flex-1 max-w-7xl mx-auto w-full px-6 py-8 relative z-10 flex flex-col gap-8">
@@ -168,7 +114,7 @@ export const Dashboard: React.FC = () => {
 
           <button
             onClick={() => setIsModalOpen(true)}
-            className="py-3.5 px-6 bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-650 hover:to-purple-650 text-white font-bold rounded-2xl shadow-lg shadow-indigo-500/20 hover:scale-[1.01] active:scale-[0.99] transition-all cursor-pointer flex items-center gap-2 shrink-0"
+            className="py-3.5 px-6 bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-650 hover:to-purple-650 text-white font-bold rounded-2xl shadow-lg shadow-indigo-500/20 hover:scale-[1.01] active:scale-[0.99] transition-all cursor-pointer flex items-center gap-2 shrink-0 animate-in fade-in duration-300"
           >
             <Plus className="w-5 h-5" />
             Nueva Votación
@@ -176,29 +122,11 @@ export const Dashboard: React.FC = () => {
         </div>
 
         {/* Dashboard statistics summary cards */}
-        <section className="grid grid-cols-3 gap-4">
-          <div className="p-5 bg-slate-900/30 border border-slate-900 rounded-2xl flex flex-col justify-between">
-            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Creadas</span>
-            <div className="flex items-baseline gap-2 mt-2">
-              <span className="text-3xl font-black text-white">{totalPolls}</span>
-              <span className="text-xs text-slate-400">totales</span>
-            </div>
-          </div>
-          <div className="p-5 bg-slate-900/30 border border-slate-900 rounded-2xl flex flex-col justify-between">
-            <span className="text-xs font-semibold text-indigo-400 uppercase tracking-wide">Activas</span>
-            <div className="flex items-baseline gap-2 mt-2">
-              <span className="text-3xl font-black text-indigo-400">{activePollsCount}</span>
-              <span className="text-xs text-slate-400">abiertas</span>
-            </div>
-          </div>
-          <div className="p-5 bg-slate-900/30 border border-slate-900 rounded-2xl flex flex-col justify-between">
-            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Terminadas</span>
-            <div className="flex items-baseline gap-2 mt-2">
-              <span className="text-3xl font-black text-slate-300">{endedPollsCount}</span>
-              <span className="text-xs text-slate-400">cerradas</span>
-            </div>
-          </div>
-        </section>
+        <DashboardStats 
+          total={totalPolls}
+          active={activePollsCount}
+          ended={endedPollsCount}
+        />
 
         {/* Toolbar & Filters */}
         <div className="flex items-center justify-between border-b border-slate-900 pb-4">
@@ -232,7 +160,7 @@ export const Dashboard: React.FC = () => {
             <span className="text-sm font-semibold text-slate-400">Cargando votaciones en tiempo real...</span>
           </div>
         ) : filteredPolls.length === 0 ? (
-          <div className="py-20 text-center bg-slate-900/10 border border-dashed border-slate-900 rounded-3xl flex flex-col items-center gap-3">
+          <div className="py-20 text-center bg-slate-900/10 border border-dashed border-slate-900 rounded-3xl flex flex-col items-center gap-3 animate-in fade-in duration-300">
             <ShieldAlert className="w-10 h-10 text-slate-600" />
             <span className="text-sm font-medium text-slate-400">No hay votaciones registradas en esta categoría.</span>
             <button
@@ -243,80 +171,17 @@ export const Dashboard: React.FC = () => {
             </button>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {filteredPolls.map((poll) => {
-              const isCreator = user?.uid === poll.creatorId;
-              const dateObj = poll.createdAt?.seconds ? new Date(poll.createdAt.seconds * 1000) : null;
-              
-              return (
-                <div 
-                  key={poll.id}
-                  onClick={() => handleNavigateToPoll(poll.id)}
-                  className="glass-card hover:border-slate-800 p-6 rounded-2xl flex flex-col justify-between min-h-[220px] shadow-lg group relative hover:scale-[1.01] hover:shadow-indigo-500/[0.02] transition-all duration-300 cursor-pointer"
-                >
-                  <div>
-                    {/* Status badge and Option count */}
-                    <div className="flex items-center justify-between mb-4">
-                      {poll.status === 'active' ? (
-                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold text-indigo-400 bg-indigo-500/10 border border-indigo-500/25">
-                          <span className="w-1 h-1 rounded-full bg-indigo-400 animate-ping" />
-                          Activa
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold text-slate-400 bg-slate-950 border border-slate-900">
-                          Terminada
-                        </span>
-                      )}
-                      <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">
-                        {poll.options.length} opciones
-                      </span>
-                    </div>
-
-                    {/* Title & Desc */}
-                    <h4 className="text-lg font-bold text-white leading-snug group-hover:text-indigo-400 transition-colors line-clamp-1">
-                      {poll.title}
-                    </h4>
-                    <p className="text-slate-400 text-xs mt-2 leading-relaxed line-clamp-2">
-                      {poll.description || 'Sin descripción adicional.'}
-                    </p>
-                  </div>
-
-                  <div className="mt-6 pt-4 border-t border-slate-900/60 flex items-center justify-between">
-                    {/* Creator / Date Info */}
-                    <div className="flex flex-col gap-0.5">
-                      <span className="text-[10px] text-slate-500 font-medium">Por {poll.creatorName}</span>
-                      {dateObj && (
-                        <span className="text-[9px] text-slate-500 flex items-center gap-1">
-                          <Calendar className="w-2.5 h-2.5" />
-                          {dateObj.toLocaleDateString()}
-                        </span>
-                      )}
-                    </div>
-
-                    {/* Actions on Card */}
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={(e) => handleShare(poll.id, e)}
-                        className="p-2 text-slate-400 hover:text-indigo-400 hover:bg-indigo-500/10 rounded-xl transition-colors cursor-pointer"
-                        title="Compartir enlace de votación"
-                      >
-                        <Share2 className="w-4 h-4" />
-                      </button>
-
-                      {isCreator && poll.status === 'active' && (
-                        <button
-                          onClick={(e) => handleClosePoll(poll.id, e)}
-                          className="p-2 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-xl transition-colors cursor-pointer"
-                          title="Cerrar esta votación"
-                        >
-                          <CheckCircle className="w-4 h-4" />
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 animate-in fade-in duration-300">
+            {filteredPolls.map((poll) => (
+              <PollCard
+                key={poll.id}
+                poll={poll}
+                currentUserId={user?.uid}
+                onShare={handleShare}
+                onClosePoll={handleClosePoll}
+                onNavigate={handleNavigateToPoll}
+              />
+            ))}
           </div>
         )}
       </main>
@@ -333,6 +198,21 @@ export const Dashboard: React.FC = () => {
       <CreatePollModal 
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
+      />
+
+      {/* Custom Confirm Modal for Closing Poll */}
+      <ConfirmModal
+        isOpen={isConfirmOpen}
+        onClose={() => {
+          setIsConfirmOpen(false);
+          setPollToClose(null);
+        }}
+        onConfirm={confirmClosePoll}
+        title="¿Cerrar Votación?"
+        message="¿Estás seguro de que deseas finalizar este debate? Ningún usuario podrá emitir más votos y los resultados actuales pasarán a ser definitivos."
+        confirmText="Finalizar"
+        cancelText="Cancelar"
+        isDestructive={true}
       />
     </div>
   );

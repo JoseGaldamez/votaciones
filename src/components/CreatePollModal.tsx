@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from '../firebase';
 import { useAuthStore } from '../store/useAuthStore';
+import { createPoll } from '../services/pollService';
 import { X, Plus, Trash2 } from 'lucide-react';
 
 interface CreatePollModalProps {
@@ -58,22 +57,14 @@ export const CreatePollModal: React.FC<CreatePollModalProps> = ({ isOpen, onClos
 
     setLoading(true);
     try {
-      const pollData = {
-        title: title.trim(),
-        description: description.trim(),
-        creatorId: user.uid,
-        creatorName: user.displayName || 'Usuario de Google',
-        creatorEmail: user.email || '',
-        status: 'active',
-        createdAt: serverTimestamp(),
-        endedAt: null,
-        options: cleanOptions.map((name, index) => ({
-          id: `opt_${Date.now()}_${index}`,
-          name,
-        })),
-      };
-
-      await addDoc(collection(db, 'polls'), pollData);
+      await createPoll(
+        title.trim(),
+        description.trim(),
+        user.uid,
+        user.displayName || 'Usuario de Google',
+        user.email || '',
+        cleanOptions
+      );
       
       // Reset form
       setTitle('');

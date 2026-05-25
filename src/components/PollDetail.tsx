@@ -1,35 +1,14 @@
 import React, { useEffect, useState } from 'react';
-import { doc, onSnapshot, setDoc, updateDoc, serverTimestamp, collection } from 'firebase/firestore';
-import { db } from '../firebase';
 import { useAuthStore } from '../store/useAuthStore';
+import { 
+  subscribeToPoll, subscribeToUserVote, subscribeToAllVotes, 
+  closePoll, castVote, type Poll, type Vote 
+} from '../services/pollService';
+import { ConfirmModal } from './ConfirmModal';
 import { 
   ArrowLeft, Vote as VoteIcon, Calendar, CheckCircle2, 
   BarChart2, Users, AlertCircle, Share2, ClipboardCheck 
 } from 'lucide-react';
-
-interface Option {
-  id: string;
-  name: string;
-}
-
-interface Poll {
-  id: string;
-  title: string;
-  description: string;
-  creatorId: string;
-  creatorName: string;
-  status: 'active' | 'ended';
-  createdAt: any;
-  endedAt: any | null;
-  options: Option[];
-}
-
-interface Vote {
-  userId: string;
-  userName: string;
-  optionId: string;
-  votedAt: any;
-}
 
 interface PollDetailProps {
   pollId: string;
@@ -48,26 +27,24 @@ export const PollDetail: React.FC<PollDetailProps> = ({ pollId }) => {
   const [submittingVote, setSubmittingVote] = useState(false);
   const [error, setError] = useState('');
   const [toastMessage, setToastMessage] = useState('');
+  const [isConfirmOpen, setIsConfirmOpen] = useState(false);
 
   const isCreator = user ? poll?.creatorId === user.uid : false;
 
   // 1. Listen to poll document
   useEffect(() => {
     if (!pollId) return;
-    const pollRef = doc(db, 'polls', pollId);
-    
-    const unsubscribe = onSnapshot(pollRef, (snapshot) => {
-      if (snapshot.exists()) {
-        setPoll({ id: snapshot.id, ...snapshot.data() } as Poll);
-      } else {
-        setError('Esta votación no existe o ha sido eliminada.');
+    const unsubscribe = subscribeToPoll(
+      pollId,
+      (loadedPoll) => {
+        setPoll(loadedPoll);
+        setLoadingPoll(false);
+      },
+      (err) => {
+        setError(err.message || 'No tienes permisos para ver esta votación.');
+        setLoadingPoll(false);
       }
-      setLoadingPoll(false);
-    }, (err) => {
-      console.error("Error fetching poll details:", err);
-      setError('No tienes permisos para ver esta votación.');
-      setLoadingPoll(false);
-    });
+    );
 
     return () => unsubscribe();
   }, [pollId]);
@@ -75,21 +52,24 @@ export const PollDetail: React.FC<PollDetailProps> = ({ pollId }) => {
   // 2. Listen to user's vote document (to check if already voted)
   useEffect(() => {
     if (!user || !pollId) return;
-    const userVoteRef = doc(db, 'polls', pollId, 'votes', user.uid);
-
-    const unsubscribe = onSnapshot(userVoteRef, (snapshot) => {
-      if (snapshot.exists()) {
-        setHasVoted(true);
-        setUserVote(snapshot.data() as Vote);
-      } else {
-        setHasVoted(false);
-        setUserVote(null);
+    const unsubscribe = subscribeToUserVote(
+      pollId,
+      user.uid,
+      (vote) => {
+        if (vote) {
+          setHasVoted(true);
+          setUserVote(vote);
+        } else {
+          setHasVoted(false);
+          setUserVote(null);
+        }
+        setLoadingVote(false);
+      },
+      (err) => {
+        console.error("Error fetching user vote state:", err);
+        setLoadingVote(false);
       }
-      setLoadingVote(false);
-    }, (err) => {
-      console.error("Error fetching user vote state:", err);
-      setLoadingVote(false);
-    });
+    );
 
     return () => unsubscribe();
   }, [pollId, user]);
@@ -101,17 +81,15 @@ export const PollDetail: React.FC<PollDetailProps> = ({ pollId }) => {
       return;
     }
 
-    const votesCollectionRef = collection(db, 'polls', pollId, 'votes');
-    const unsubscribe = onSnapshot(votesCollectionRef, (snapshot) => {
-      const loadedVotes: Vote[] = [];
-      snapshot.forEach((doc) => {
-        loadedVotes.push(doc.data() as Vote);
-      });
-      setAllVotes(loadedVotes);
-    }, (err) => {
-      // It's expected to fail if user hasn't voted yet due to security rules
-      console.log("Real-time results access restricted by security rules until voting." + err.message);
-    });
+    const unsubscribe = subscribeToAllVotes(
+      pollId,
+      (loadedVotes) => {
+        setAllVotes(loadedVotes);
+      },
+      (err) => {
+        console.log("Real-time results access restricted by security rules until voting." + err.message);
+      }
+    );
 
     return () => unsubscribe();
   }, [pollId, user, isCreator, hasVoted]);
@@ -134,17 +112,15 @@ export const PollDetail: React.FC<PollDetailProps> = ({ pollId }) => {
       });
   };
 
-  const handleClosePoll = async () => {
+  const handleClosePoll = () => {
     if (!poll || !isCreator) return;
-    if (!window.confirm('¿Quieres cerrar esta votación de forma definitiva?')) {
-      return;
-    }
+    setIsConfirmOpen(true);
+  };
+
+  const confirmClosePoll = async () => {
+    if (!poll || !isCreator) return;
     try {
-      const pollRef = doc(db, 'polls', poll.id);
-      await updateDoc(pollRef, {
-        status: 'ended',
-        endedAt: serverTimestamp()
-      });
+      await closePoll(poll.id);
       showToast('Votación terminada con éxito.');
     } catch (err) {
       console.error('Error closing poll:', err);
@@ -157,16 +133,12 @@ export const PollDetail: React.FC<PollDetailProps> = ({ pollId }) => {
 
     setSubmittingVote(true);
     try {
-      const userVoteRef = doc(db, 'polls', poll.id, 'votes', user.uid);
-      
-      const voteData: Vote = {
-        userId: user.uid,
-        userName: user.displayName || 'Usuario de Google',
-        optionId: selectedOptionId,
-        votedAt: serverTimestamp(),
-      };
-
-      await setDoc(userVoteRef, voteData);
+      await castVote(
+        poll.id,
+        user.uid,
+        user.displayName || 'Usuario de Google',
+        selectedOptionId
+      );
       showToast('¡Tu voto ha sido registrado!');
     } catch (err) {
       console.error('Error casting vote:', err);
@@ -430,6 +402,17 @@ export const PollDetail: React.FC<PollDetailProps> = ({ pollId }) => {
           {toastMessage}
         </div>
       )}
+      {/* Custom Confirm Modal for Closing Poll */}
+      <ConfirmModal
+        isOpen={isConfirmOpen}
+        onClose={() => setIsConfirmOpen(false)}
+        onConfirm={confirmClosePoll}
+        title="¿Finalizar Votación?"
+        message="¿Estás seguro de que deseas cerrar este debate? Todos los votos se registrarán permanentemente y los resultados pasarán a ser definitivos de inmediato."
+        confirmText="Finalizar"
+        cancelText="Cancelar"
+        isDestructive={true}
+      />
     </div>
   );
 };
